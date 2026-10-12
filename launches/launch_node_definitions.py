@@ -52,6 +52,11 @@ grid_route_costmap = Node(
     executable='route_costmap_node'
 )
 
+pedestrian_costmap = Node(
+    package='costs',
+    executable='pedestrian_costmap_node'
+)
+
 grid_summation = Node(
     package='costs',
     executable='grid_summation_node'
@@ -291,6 +296,20 @@ hybrid_drivable_grid = Node(
     package="segmentation",
     executable="hybrid_drivable_grid_node",
     name="hybrid_drivable_grid_node",
+    output="screen",
+)
+
+yolopv2_drivable_grid = Node(
+    package="segmentation",
+    executable="yolopv2_drivable_grid_node",
+    name="yolopv2_drivable_grid_node",
+    output="screen",
+)
+
+route_costmap_v2 = Node(
+    package="segmentation",
+    executable="route_costmap_v2_node",
+    name="route_costmap_v2_node",
     output="screen",
 )
 
