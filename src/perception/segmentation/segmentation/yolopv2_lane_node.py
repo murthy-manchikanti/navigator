@@ -121,7 +121,7 @@ class Yolopv2LaneNode(Node):
         self.get_logger().info(f"Loading YOLOPv2 on {self.device}…")
 
         def load_yolopv2():
-            model = torch.jit.load(_WEIGHTS)
+            model = torch.jit.load(_WEIGHTS, map_location=self.device)
             model = model.to(self.device)
             if self.device.type == "cuda":
                 model = model.half()

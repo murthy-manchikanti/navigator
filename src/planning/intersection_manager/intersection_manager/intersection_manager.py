@@ -10,7 +10,8 @@ import rclpy
 from rclpy.node import Node
 from navigator_msgs.msg import TrafficLightDetection
 from nav_msgs.msg import Path
-from navigator_msgs.msg import CarlaSpeedometer
+from navigator_msgs.msg import VehicleSpeed
+from rclpy.qos import qos_profile_sensor_data
 from nav_msgs.msg import OccupancyGrid
 import math
 import time
@@ -22,11 +23,13 @@ class IntersectionManager(Node):
     def __init__(self):
         super().__init__('intersection_manager')
         
+        self.declare_parameter('traffic_rule_source', 'carla')
+
         #Create subscriptions
         self.traffic_light_sub = self.create_subscription(TrafficLightDetection, '/traffic_lights/detections', self.trafficLightCallback, 1)
         self.road_sign_sub = self.create_subscription(RoadSignsDetection, '/road_signs/detections', self.roadSignsCallback, 1)
         self.route_sub = self.create_subscription(Path, '/planning/path', self.routeCallback, 1)
-        self.speed_sub = self.create_subscription(CarlaSpeedometer, '/speed', self.speedCallback, 1)
+        self.speed_sub = self.create_subscription(VehicleSpeed, '/speed', self.speedCallback, qos_profile_sensor_data)
         self.current_occupancy_sub = self.create_subscription(OccupancyGrid, '/grid/occupancy/current', self.occupancyCallback, 1)
         self.lane_type_detector_sub = self.create_subscription(AllLaneDetections, '/lane_types/detections', self.laneTypeCallback, 1)
 
@@ -75,8 +78,14 @@ class IntersectionManager(Node):
 
 
     def trafficLightCallback(self, msg: TrafficLightDetection):
-        self.traffic_light_status = msg.traffic_lights[-1].label
-        self.traffic_light_height = msg.traffic_lights[-1].height
+        if self.get_parameter('traffic_rule_source').value != 'camera':
+            return
+        lights = [light for light in msg.traffic_lights if light.score >= 0.6]
+        if not lights:
+            return
+        light = min(lights, key=lambda light: {0: 0, 1: 1, 2: 2}.get(light.label, 3))
+        self.traffic_light_status = light.label
+        self.traffic_light_height = light.height
 
 
     def roadSignsCallback(self, msg: RoadSignsDetection): 
@@ -87,9 +96,18 @@ class IntersectionManager(Node):
     
     def routeCallback(self, msg: Path):
         self.route = msg.poses
+        # A local path can be empty or end before the lookahead window. Clear
+        # the previous classification rather than retaining an old turn.
+        self.behavior_through_intersection = None
+        if len(self.route) <= 10:
+            return
+
+        self.behavior_through_intersection = None
+        if len(self.route) <= 10:
+            return
 
         current_pose_x = self.route[0].pose.position.x
-        for i in range(10, 110, 1):
+        for i in range(10, min(110, len(self.route))):
             future_pose_x = self.route[i].pose.position.x
             difference_x = future_pose_x - current_pose_x
 
@@ -101,13 +119,12 @@ class IntersectionManager(Node):
                 self.behavior_through_intersection = "Straight"
 
 
-    def speedCallback(self, msg: CarlaSpeedometer):
+    def speedCallback(self, msg: VehicleSpeed):
         self.speed = msg.speed
 
 
     def classify_intersection_type(self):
         if (self.traffic_light_status != None):
-            self.traffic_light_status = None
             return "TrafficLight"
         elif (self.road_sign_type == "stop"):
             self.road_sign_type = None
@@ -129,36 +146,7 @@ class IntersectionManager(Node):
 
 
     def navigate_traffic_light_intersection(self):
-        status_message = None
-
-        if (self.traffic_light_status == 0):
-            speedFPS = self.speed * 5280 / 60 / 60
-            timeToStop = speedFPS / 15
-            brakingDistance = 0.5 * 15 * timeToStop * timeToStop
-
-            distanceTointersection = ((36 / self.traffic_light_height) / 12) - 100
-
-            if (distanceTointersection > brakingDistance):
-                status_message = "KeepDriving"
-            else:
-                status_message = "BrakeAndStop"
-        
-        elif (self.traffic_light_status == 1):
-            speedFPS = self.speed * 5280 / 60 / 60
-            timeToStop = speedFPS / 15
-            minBrakingDistance = 0.5 * 15 * timeToStop * timeToStop
-
-            distanceTointersection = ((36 / self.traffic_light_height) / 12) - 100
-
-            if (distanceTointersection > minBrakingDistance):
-                status_message = "BrakeAndStop"
-            else:
-                status_message = "KeepDriving"
-        
-        elif (self.traffic_light_status == 2):
-            status_message = "KeepDriving"
-
-        return status_message
+        return "BrakeAndStop" if self.traffic_light_status in (0, 1) else "KeepDriving"
 
 
     def navigate_stop_sign_intersection(self):

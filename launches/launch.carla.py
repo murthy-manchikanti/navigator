@@ -1,5 +1,8 @@
 """This module contains the launch description for the Carla simulator."""
 
+from launch import LaunchDescription
+from launch_ros.actions import SetParameter
+
 from os import path
 import sys
 
@@ -15,4 +18,7 @@ def generate_launch_description():
     except IncludeError as e:
         err_fatal(e)
 
-    return vehicle_launch_description
+    return LaunchDescription([
+        SetParameter(name='use_sim_time', value=True),
+        *vehicle_launch_description.describe_sub_entities(),
+    ])

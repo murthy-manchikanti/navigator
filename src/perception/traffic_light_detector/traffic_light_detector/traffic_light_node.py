@@ -1,93 +1,67 @@
-'''
-Package: traffic_light_detector
-   File: traffic_light_node.py
- Author: Vindhya Kaushall
-
-Node to filter and process raw camera footage and classify traffic lights
-
-This node outputs green for green, yellow for yellow, and red for red.
-
-'''
+"""Front-camera traffic lights mapped to Navigator's red/yellow/green labels."""
+from pathlib import Path
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
 from ultralytics import YOLO
+import torch
 from navigator_msgs.msg import TrafficLight, TrafficLightDetection
-from PIL import Image as PILImage
-import base64
+
+# The installed model's IDs are red=0, green=1, off=2, yellow=3.
+# Navigator's wire labels are red=0, yellow=1, green=2.
+LABELS = {'red': 0, 'yellow': 1, 'green': 2}
+
 
 class TrafficLightDetectionNode(Node):
     def __init__(self):
         super().__init__('traffic_light_detection_node')
-        
-        # Initialize YOLO model for traffic light detection
-        self.model = YOLO('/navigator_binaries/best_traffic_med_yolo_v8.pt')  # Correct path
-
-        # Initialize CvBridge to convert ROS image messages to OpenCV
+        self.declare_parameter('model_path', '/navigator_binaries/best_traffic_med_yolo_v8.pt')
+        self.declare_parameter('image_topic', '/cameras/camera0')
+        self.declare_parameter('confidence', 0.6)
+        model_path = self.get_parameter('model_path').value
+        if not Path(model_path).is_file():
+            raise FileNotFoundError(f'Traffic-light weights missing: {model_path}')
+        torch.set_num_threads(2)
+        self.declare_parameter("device", "cpu")
+        self.model = YOLO(model_path)
         self.bridge = CvBridge()
-        
-        # Subscribe to the image topic (modify topic if necessary)
-        self.image_subscriber = self.create_subscription(
-            Image, '/cameras/camera0', self.image_callback, 10)
-        
-        # Publisher for the detection result
+        self.latest = None
+        self.create_subscription(Image, self.get_parameter('image_topic').value, self.image_callback, qos_profile_sensor_data)
         self.traffic_light_publisher = self.create_publisher(TrafficLightDetection, '/traffic_lights/detections', 10)
+        self.create_timer(0.2, self.detect)
 
-    def image_callback(self, msg: Image):
-       # Convert ROS image message to OpenCV image
-        cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
-    
-       # Run inference on the image using YOLO
-        results = self.model.predict(source=cv_image)
-    
-       # Create a TrafficLightDetection message to publish
-        detection_msg = TrafficLightDetection()
-        detection_msg.header.stamp = self.get_clock().now().to_msg()
-        detection_msg.header.frame_id = 'camera_frame'
-    
-       # Process results and append to the detection message
-        """for r in results:
-            for box in r.boxes:"""
-            # Extract bounding box data
-        
-        boxes = results[0].boxes.xyxy.tolist()
-        classes = results[0].boxes.cls.tolist()
-        names = results[0].names
-        confidences = results[0].boxes.conf.tolist()
+    def image_callback(self, msg):
+        self.latest = msg
 
-# Iterate through the results
-        """x1=0.0
-        y1=0.0 
-        x2=0.0
-        y2=0.0"""
+    def detect(self):
+        msg, self.latest = self.latest, None
+        if msg is None:
+            return
+        image = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
+        output = TrafficLightDetection()
+        output.header = msg.header
+        results = self.model.predict(image, conf=self.get_parameter('confidence').value, device=self.get_parameter('device').value, verbose=False)
+        for result in results:
+            for box, cls, confidence in zip(result.boxes.xyxy.tolist(), result.boxes.cls.tolist(), result.boxes.conf.tolist()):
+                label = LABELS.get(result.names[int(cls)].lower())
+                if label is None:
+                    continue
+                x1, y1, x2, y2 = box
+                light = TrafficLight()
+                light.x, light.y = float(x1), float(y1)
+                light.width, light.height = float(x2-x1), float(y2-y1)
+                light.label, light.score = label, float(confidence)
+                output.traffic_lights.append(light)
+        self.traffic_light_publisher.publish(output)
 
-        for box, cls, conf in zip(boxes, classes, confidences):
-            x1, y1, x2, y2 = box
-            confidence = conf
-            detected_class = cls
-            name = names[int(cls)]
-            
-                # Create a TrafficLight message
-            traffic_light = TrafficLight()
-            traffic_light.x = float(x1)
-            traffic_light.y = float(y1)
-            traffic_light.width = float(x2 - x1)
-            traffic_light.height = float(y2 - y1)
-            traffic_light.label = int(cls)  # Example label (traffic light class)
-            '''traffic_light.confidence = float(conf)''' #no to this
-                
-            detection_msg.traffic_lights.append(traffic_light)
-
-       # Publish the detection result
-        self.traffic_light_publisher.publish(detection_msg)
 
 def main(args=None):
     rclpy.init(args=args)
     node = TrafficLightDetectionNode()
-    rclpy.spin(node)
-    rclpy.shutdown()
-
-if __name__ == '__main__':
-    main()
-
+    try:
+        rclpy.spin(node)
+    finally:
+        node.destroy_node()
+        rclpy.try_shutdown()
