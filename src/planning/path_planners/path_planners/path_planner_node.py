@@ -200,6 +200,9 @@ class PathPlannerNode(Node):
         self.get_logger().info(f"Path Planner Node initialized using {self.planner.__class__.__name__}")
 
     def clock_callback(self, msg: Clock):
+        if msg.clock.sec < self.clock.clock.sec:
+            self._best_goal_stamp = 0.0
+            self.path_goal = None
         self.clock = msg
 
     def costmap_callback(self, msg: OccupancyGrid):
@@ -239,6 +242,12 @@ class PathPlannerNode(Node):
         return new.astype(np.int32)
 
 
+    def publish_empty_path(self):
+        msg = Path()
+        msg.header.frame_id = "base_link"
+        msg.header.stamp = self.clock.clock
+        self.path_pub.publish(msg)
+
     def generate_path(self):
         # Snapshot costmap under lock to prevent race with callback thread
         with self._costmap_lock:
@@ -246,9 +255,11 @@ class PathPlannerNode(Node):
 
         if costmap_snap is None:
             self.get_logger().warning("Have not received costmap yet...")
+            self.publish_empty_path()
             return
         if self.path_goal is None:
             self.get_logger().warning("Have not received goal for path yet...")
+            self.publish_empty_path()
             return
 
         # Use-time ghost check: if cached goal is now stale vs sim clock, clear it
@@ -258,37 +269,38 @@ class PathPlannerNode(Node):
             self.get_logger().warning(
                 "Stale path_goal cleared (ghost?)", throttle_duration_sec=5.0)
             self.path_goal = None
+            self.publish_empty_path()
+            return
+
+        grid_sec = (costmap_snap.header.stamp.sec +
+                    costmap_snap.header.stamp.nanosec * 1e-9)
+        if (costmap_snap.header.frame_id != 'base_link' or
+                self.path_goal.header.frame_id != 'base_link' or
+                (clk_sec > 0 and not -0.5 <= clk_sec - grid_sec <= 0.5)):
+            self.publish_empty_path()
             return
 
         resolution = costmap_snap.info.resolution
+        if resolution <= 0.0:
+            self.publish_empty_path()
+            return
         raw_height = costmap_snap.info.height
         raw_width  = costmap_snap.info.width
 
         if len(costmap_snap.data) != raw_height * raw_width:
             self.get_logger().error("Costmap size mismatch.")
+            self.publish_empty_path()
             return
 
-        # ----------------------------
-        # SCALE MAP TO 60m x 60m
-        # ----------------------------
-        target_cells = int(60.0 / resolution)
-
+        # Preserve OccupancyGrid geometry, including rectangular maps.
+        self.origin_x = -costmap_snap.info.origin.position.x
+        self.origin_y = -costmap_snap.info.origin.position.y
         costmap_np = np.asarray(costmap_snap.data, dtype=np.int32).reshape(raw_height, raw_width)
-
-        if raw_height != target_cells or raw_width != target_cells:
-            costmap_np = self.scale_grid_numpy(
-                costmap_snap.data,
-                raw_height,
-                raw_width,
-                target_cells,
-                target_cells
-            )
-
 
         height, width = costmap_np.shape
 
         # ----------------------------
-        # Compute start and goal AFTER scaling
+        # Compute start and goal in the incoming grid
         # ----------------------------
 
         start_i = int(round(self.origin_y / resolution))
@@ -297,7 +309,7 @@ class PathPlannerNode(Node):
         goal_i = int(round((self.path_goal.pose.position.y + self.origin_y) / resolution))
         goal_j = int(round((self.path_goal.pose.position.x + self.origin_x) / resolution))
 
-        # Clamp using SCALED dimensions
+        # Clamp using incoming grid dimensions
         start_i = max(0, min(start_i, height - 1))
         start_j = max(0, min(start_j, width - 1))
         goal_i = max(0, min(goal_i, height - 1))
@@ -340,6 +352,7 @@ class PathPlannerNode(Node):
                     self.get_logger().warning(
                         'No free cell found along start→goal line; path will be empty.',
                         throttle_duration_sec=2.0)
+                    self.publish_empty_path()
                     return
 
         # ----------------------------
@@ -391,6 +404,7 @@ class PathPlannerNode(Node):
         if path is None or len(path) == 0:
             self.get_logger().warning("!!! Pathfinding returned a path as None !!!",
                                       throttle_duration_sec=2.0)
+            self.publish_empty_path()
             return
 
         # ----------------------------

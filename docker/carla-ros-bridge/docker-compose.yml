@@ -2,6 +2,8 @@ version: '2.3'
 name: carla_bridge
 services:
     carla_bridge:
+        depends_on:
+          - scene_observer
         privileged: true
         stdin_open: true
         tty: true
@@ -43,3 +45,21 @@ services:
           dockerfile: Dockerfile
         
         network_mode: "host"
+
+    scene_observer:
+        image: carla_bridge
+        ipc: host
+        restart: unless-stopped
+        network_mode: "host"
+        environment:
+          - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-83}
+          - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+        volumes:
+          - /home/share/carla:/carla:ro
+          - ./carla_scene_observer.py:/observer/carla_scene_observer.py:ro
+        entrypoint: ["/bin/bash", "-lc"]
+        command:
+          - >-
+            source /opt/ros/foxy/setup.bash &&
+            export PYTHONPATH=/carla/PythonAPI/carla:/carla/PythonAPI/carla/dist/carla-0.9.13-py3.7-linux-x86_64.egg:$$PYTHONPATH &&
+            exec python3 /observer/carla_scene_observer.py

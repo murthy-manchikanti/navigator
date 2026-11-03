@@ -7,6 +7,8 @@ autonomous_cruise_controller:
     control_topic: "/vehicle/control"
     
     # Control parameters
+    traffic_rule_source: "carla"  # camera predictions remain diagnostic in CARLA
+    standstill_gap_m: 1.5  # desired bumper-to-bumper clearance
     control_rate: 20.0  # Hz
     enabled: true
     

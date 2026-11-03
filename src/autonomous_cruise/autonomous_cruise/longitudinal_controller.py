@@ -113,6 +113,14 @@ class AdaptiveLongitudinalController:
             current_speed
         )
 
+        # A stopped lead vehicle must hold the brake even when the PID has
+        # accumulated positive integral or acceleration from cruising.
+        if adaptive_target_speed <= 0.0:
+            self.integral = 0.0
+            self.prev_err = 0.0
+            self.last_a = 0.0
+            return 0.0, self.max_brake, 0.0
+
         # PID control to track target speed
         a_cmd = self._compute_pid_acceleration(
             current_speed, adaptive_target_speed, dt
@@ -159,9 +167,7 @@ class AdaptiveLongitudinalController:
                 continue
 
             # Get object position (center of bounding box)
-            center_x = obj.bounding_box.center.position.x
-            center_y = obj.bounding_box.center.position.y
-            center_z = obj.bounding_box.center.position.z
+            center_x, center_y, center_z = obj.bounding_box.coordinates[:3]
 
             # Compute distance
             distance = math.sqrt(center_x**2 + center_y**2 + center_z**2)

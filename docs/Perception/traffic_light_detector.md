@@ -5,41 +5,31 @@ nav_order: 1
 parent: Perception
 ---
 
-# Traffic Light Detector Node
-{: .no_toc }
+# Traffic Light Detector
 
-*Maintained by NOVA*
+The active perception launch runs `traffic_light_detector/traffic_light_node`
+on `/cameras/camera0` using the local weights
+`/navigator_binaries/best_traffic_med_yolo_v8.pt`. Images use sensor-data QoS
+and are converted to BGR. Each new frame is processed once at up to 5 Hz.
 
-## Overview
-The `TrafficLightDetectorNode` is responsible for detecting traffic lights in images captured by a camera and publishing the detections. It utilizes a pre-trained Faster R-CNN model for traffic light detection. Unfortunately, the model only works on vertical black traffic lights. This is due to lack of data on any other type of traffic light. I have attatched links to the kaggle resources that I have used to preproccess data, train the model, and store everything.
+Output: `/traffic_lights/detections` (`navigator_msgs/TrafficLightDetection`).
+Each detection includes its box, score, and Navigator label:
 
----
+| Label | Meaning |
+| --- | --- |
+| 0 | Red |
+| 1 | Yellow |
+| 2 | Green |
 
-### Kaggle Resources:
-- Model Training Kaggle Notebook- (https://www.kaggle.com/code/neilagrawal04/traffic-light-detection-pytorch-starter)
-- Model Dataset - (https://kaggle.com/datasets/neilagrawal04/traffic-light-model/settings)
-    - Model currently used 'fasterrcnn_resnet50_fpn.pth'
-- Texas Traffic Light Dataset - (https://www.kaggle.com/datasets/neilagrawal04/texas-traffic-lights/data)
-    - YOLO format
+The installed model uses different IDs; the node translates by class name
+and ignores `off`. Image timestamps/frame IDs are preserved, and empty
+results are published. ACC stops on red/yellow and only a subsequent fresh
+green observation clears the camera stop. These observations are not yet
+associated with a particular lane or stop line.
 
-### In:
-- **/cameras/camera0** [*Image*](https://docs.ros.org/en/melodic/api/sensor_msgs/html/msg/Image.html)
-  - This topic receives image messages from the camera. The node subscribes to this topic to receive input images for traffic light detection.
+See [Traffic Rules](../Planning/traffic_rules.md) for setup, behavior,
+parameters, tests, and validation limits.
 
-### Out:
-- **/traffic_light/detections** [*TrafficLightDetection*](../messages.md#trafficlightdetection)
-  - This message contains information about detected traffic lights, including their positions, sizes, labels, and confidence scores. The node publishes this message to inform other nodes about detected traffic lights. This node outputs 1 for green, 2 for yellow, and 3 for red.
-
----
-
-### preprocess_image(self, image_data)
-Preprocesses the input image data before feeding it to the model for inference. This involves converting the image to a PyTorch tensor and resizing it to the required dimensions.
-
-### detect_traffic_lights(self, image_data)
-Performs traffic light detection on the input image data using a pre-trained Faster R-CNN model. Postprocesses the model's predictions to extract bounding boxes, scores, and labels for detected traffic lights.
-
-### postprocess_predictions(self, predictions)
-Processes the model's predictions to extract bounding boxes, confidence scores, and labels for detected traffic lights.
-
-### image_callback(self, msg)
-Callback function triggered upon receiving an image message from the camera. Converts the image message to OpenCV format, runs traffic light detection, and publishes the detection results.
+In the default CARLA control mode these camera outputs are diagnostic.
+The read-only CARLA scene observer supplies authoritative sign/light facts;
+set `traffic_rule_source: camera` explicitly for camera-control experiments.

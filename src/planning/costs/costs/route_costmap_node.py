@@ -88,14 +88,6 @@ class RouteCostmapNode(Node):
 
         self.clock = Clock()
 
-        # Position hysteresis: only repaint corridor when vehicle moved >= 0.3 m.
-        # Prevents TF sub-cell jitter from shifting the corridor 1 cell left/right
-        # every callback and causing Dijkstra to oscillate between two routes.
-        self._last_paint_tx = None
-        self._last_paint_ty = None
-        self._cached_routemap = None
-        self._cached_goal = None
-
     def clockCb(self, msg: Clock):
         self.clock = msg
 
@@ -195,33 +187,6 @@ class RouteCostmapNode(Node):
             
             roll, pitch, yaw = euler_from_quaternion(quat_to_numpy(ego_tf.transform.rotation))
 
-            # Position hysteresis: skip expensive corridor repaint when vehicle
-            # hasn't moved >=0.3 m, but always re-publish the cached goal/map
-            # so the path_planner's stale-goal timer never expires.
-            tx = ego_tf.transform.translation.x
-            ty = ego_tf.transform.translation.y
-            skip_repaint = False
-            if self._last_paint_tx is not None:
-                dx = tx - self._last_paint_tx
-                dy = ty - self._last_paint_ty
-                if dx*dx + dy*dy < 0.09:   # < 0.3 m
-                    skip_repaint = True
-            if not skip_repaint:
-                self._last_paint_tx = tx
-                self._last_paint_ty = ty
-
-            xmax    =  cfg['occupancy_grids']['length'] - veh_long   # +40 m ahead
-            xmin    = -veh_long                                        # -20 m behind
-            ymin    = -veh_lat                                         # -30 m right
-            ymax    =  veh_lat                                         # +30 m left
-            gridres =  resolution
-
-            # transform the route points to base_link 
-            # If vehicle hasn't moved enough, re-publish cached result and skip
-            if skip_repaint and hasattr(self, '_cached_routemap') and self._cached_routemap is not None:
-                self.publish(self._cached_routemap, self._cached_goal, cfg)
-                return
-
             route_baselink_x = np.zeros(len(self.route_remaining))
             route_baselink_y = np.zeros(len(self.route_remaining))
             # dist_to_car = np.zeros(len(self.route_remaining))
@@ -263,7 +228,7 @@ class RouteCostmapNode(Node):
             for idx in range(1, len(route_baselink_x)):
                 dx = route_baselink_x[idx] - route_baselink_x[idx-1]
                 dy = route_baselink_y[idx] - route_baselink_y[idx-1]
-                steps = int(np.ceil(max(abs(dx), abs(dy)) / gridres))
+                steps = int(np.ceil(max(abs(dx), abs(dy)) / resolution))
                 if steps == 0:
                     continue
                 for t in np.linspace(0, 1, steps + 1)[1:]:
@@ -277,7 +242,7 @@ class RouteCostmapNode(Node):
 
             if len(gridxs) < 2:
                 self.get_logger().info('You have reached the end of the route.')
-                self.publish(routemap, (0.0, 0.0))
+                self.publish(routemap, (0.0, 0.0), cfg)
                 return
 
             # ------------------------------------------------------------------
@@ -301,29 +266,27 @@ class RouteCostmapNode(Node):
             CENTER_UNCONFIRMED = 20  # exact route centerline, HD-map only
             EDGE_CONFIRMED     = 10  # lane-edge cost, camera confirmed
             EDGE_UNCONFIRMED   = 30  # lane-edge cost, HD-map only
+            offsets = np.arange(-HALF_W, HALF_W + 1)
+            di, dj = np.meshgrid(offsets, offsets, indexing="ij")
+            radial_fraction = np.minimum(1.0, np.hypot(di, dj) / HALF_W)
             for r in range(len(gridxs)):
                 confirmed = self._is_camera_confirmed_drivable(gridxs[r], gridys[r])
                 center_val = CENTER_CONFIRMED if confirmed else CENTER_UNCONFIRMED
                 edge_val   = EDGE_CONFIRMED   if confirmed else EDGE_UNCONFIRMED
-                ci = int(round((gridys[r] + veh_lat)  / gridres))
-                cj = int(round((gridxs[r] + veh_long) / gridres))
+                ci = int(round((gridys[r] + veh_lat)  / resolution))
+                cj = int(round((gridxs[r] + veh_long) / resolution))
                 # Radial gradient: cost is lowest exactly on the centerline and
                 # ramps up smoothly to edge_val at the lane edge (HALF_W cells
                 # out), instead of a flat padding band. Biases the planner to
                 # hug lane center and only drift outward when something (an
                 # obstacle) forces it to.
-                for di in range(-HALF_W, HALF_W + 1):
-                    for dj in range(-HALF_W, HALF_W + 1):
-                        ni, nj = ci + di, cj + dj
-                        if 0 <= ni < grid_rows and 0 <= nj < grid_cols:
-                            frac = min(1.0, np.sqrt(di * di + dj * dj) / HALF_W)
-                            cell_val = center_val + (edge_val - center_val) * frac
-                            if routemap[ni, nj] > cell_val:
-                                routemap[ni, nj] = cell_val
-                # Exact centerline always lowest cost
-                if 0 <= ci < grid_rows and 0 <= cj < grid_cols:
-                    if routemap[ci, cj] > center_val:
-                        routemap[ci, cj] = center_val
+                r0, r1 = max(0, ci - HALF_W), min(grid_rows, ci + HALF_W + 1)
+                c0, c1 = max(0, cj - HALF_W), min(grid_cols, cj + HALF_W + 1)
+                kernel = center_val + (edge_val - center_val) * radial_fraction
+                patch = kernel[r0 - ci + HALF_W:r1 - ci + HALF_W,
+                               c0 - cj + HALF_W:c1 - cj + HALF_W]
+                np.minimum(routemap[r0:r1, c0:c1], patch,
+                           out=routemap[r0:r1, c0:c1])
 
             # ------------------------------------------------------------------
             # Goal selection: camera-horizon receding-goal strategy.
@@ -355,6 +318,8 @@ class RouteCostmapNode(Node):
             for r in range(len(gridxs)):
                 if gridxs[r] < 0.0:
                     continue  # skip behind-vehicle route points
+                if np.hypot(gridxs[r], gridys[r]) > 8.0:
+                    break
                 if self._is_camera_confirmed_drivable(gridxs[r], gridys[r]):
                     goal = (gridxs[r], gridys[r])  # keep extending horizon
                 else:
@@ -363,19 +328,18 @@ class RouteCostmapNode(Node):
             # Fallback: any drivable cell (startup / perception warming up)
             if goal is None:
                 for r in range(len(gridxs) - 1, -1, -1):
-                    if self._is_drivable(gridxs[r], gridys[r]):
+                    if (0.0 < gridxs[r] and np.hypot(gridxs[r], gridys[r]) <= 8.0
+                            and self._is_drivable(gridxs[r], gridys[r])):
                         goal = (gridxs[r], gridys[r])
                         break
 
             if goal is None:
-                goal = (gridxs[0], gridys[0])
+                goal = (0.0, 0.0)  # no forward goal in the reliable horizon: stop
 
             self.get_logger().info(
                 'path goal: x=%.2f y=%.2f' % goal,
                 throttle_duration_sec=2.0)
 
-            self._cached_routemap = routemap
-            self._cached_goal = goal
             self.publish(routemap, goal, cfg)
 
         except(LookupException, ExtrapolationException, ConnectivityException) as e: # typically get some errors on startup as the tf buffer fills

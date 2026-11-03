@@ -39,7 +39,8 @@ class TestPurePursuitController(unittest.TestCase):
 
         # At high speed
         ld_high = self.controller._compute_lookahead_distance(20.0)
-        self.assertEqual(ld_high, 15.0)  # Clamped to max
+        self.assertEqual(ld_high, 13.0)  # 3.0 + 0.5 * 20.0
+        self.assertEqual(self.controller._compute_lookahead_distance(30.0), 15.0)
 
     def test_steering_with_straight_path(self):
         """Test steering for straight path ahead."""
@@ -86,8 +87,8 @@ class TestPurePursuitController(unittest.TestCase):
 
         steer, cte = self.controller.compute_steering(current_pose, 5.0)
 
-        # Should steer left (positive)
-        self.assertGreater(steer, 0.0)
+        # Should steer left (negative in CARLA)
+        self.assertLess(steer, 0.0)  # CARLA: negative steer turns left
         # Cross-track error should be ~2.0
         self.assertAlmostEqual(cte, 2.0, delta=0.5)
 
@@ -177,9 +178,7 @@ class TestAdaptiveLongitudinalController(unittest.TestCase):
         
         # Car 10 meters ahead
         bbox = BoundingBox3D()
-        bbox.center.position.x = 10.0
-        bbox.center.position.y = 0.0
-        bbox.center.position.z = 0.0
+        bbox.coordinates = [10.0, 0.0, 0.0, 4.0, 2.0, 1.5, 0.0]
         car.bounding_box = bbox
         
         objects.objects.append(car)
@@ -198,9 +197,7 @@ class TestAdaptiveLongitudinalController(unittest.TestCase):
         car = Object3D()
         car.label = Object3D.CAR
         bbox = BoundingBox3D()
-        bbox.center.position.x = 8.0  # Close (less than desired distance)
-        bbox.center.position.y = 0.0
-        bbox.center.position.z = 0.0
+        bbox.coordinates = [8.0, 0.0, 0.0, 4.0, 2.0, 1.5, 0.0]
         car.bounding_box = bbox
         objects.objects.append(car)
 

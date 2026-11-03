@@ -1,32 +1,26 @@
 ---
 layout: default
 title: Road Signs Classifier
-nav_order: 7
 parent: Perception
 ---
 
-# Road Signs Classifier
-{: .no_toc }
+# Stop-sign detection
 
-*Maintained by Pranav Boyapati*
+`road_signs_classifier` now runs local YOLO11n COCO weights from
+`/navigator/data/models/yolo11n.pt`. It detects the `stop sign` class in
+`/cameras/camera0` and publishes `navigator_msgs/RoadSignsDetection` on
+`/perception/stop_signs`, preserving the image header. Every new processed
+frame publishes all signs or an empty array. The confidence threshold is
+0.6 by default; processing is capped at 5 Hz with two CPU threads.
 
-## Overview
-A ROS Node that uses the inference-sdk to make API calls and classify the road signs within an image.
+This replaces the old external inference-service implementation. General
+road-sign classes are not currently enabled. ACC estimates sign range,
+slows on approach, holds a full stop for three seconds, then suppresses
+repeated stops for the same sign using travel/visibility conditions.
 
----
+See [Traffic Rules](../Planning/traffic_rules.md) for model provisioning,
+calibration, behavior, tests, and validation limits.
 
-### In:
-
-- **/cameras/camera0** [*Image*](https://docs.ros.org/en/melodic/api/sensor_msgs/html/msg/Image.html)
-  - Receives an image taken by the front camera.
-
-
-### Out:
-
-- **/road_signs/detections** [*RoadSignsDetection*](../messages.md#roadsignsdetection)
-  - Publishes an array of road sign detections.
-
----
-
-### image_callback(self, msg: Image)
-Takes in a camera image as input, performs a classification by calling the classify_sign(self) function, then publishes the results as a `RoadSignsDetection` message.
+In the default CARLA control mode these camera outputs are diagnostic.
+The read-only CARLA scene observer supplies authoritative sign/light facts;
+set `traffic_rule_source: camera` explicitly for camera-control experiments.
